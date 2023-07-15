@@ -2,3 +2,5 @@
 !/.gitignore
 venv
 celerybeat-schedule
+__pycache__/
+*.pyc
