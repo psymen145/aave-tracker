@@ -19,6 +19,12 @@ class Migration(migrations.Migration):
         ),
         migrations.AddField(
             model_name='contract',
+            name='implementation_address',
+            field=models.TextField(default=django.utils.timezone.now),
+            preserve_default=False,
+        ),
+        migrations.AddField(
+            model_name='contract',
             name='name',
             field=models.TextField(default=django.utils.timezone.now),
             preserve_default=False,
