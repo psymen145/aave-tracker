@@ -6,7 +6,7 @@ class Position(models.Model):
     wallet = models.ForeignKey("tracker.wallet", on_delete=models.PROTECT, related_name="+", null=True)
     network = models.ForeignKey("tracker.network", on_delete=models.PROTECT, related_name="+", null=True)
     health_factor = models.TextField()
-    total_eth_collateral = models.TextField()
+    total_usd_collateral = models.TextField()
     last_modified = models.DateTimeField(auto_now=True, null=True)
     deleted = models.BooleanField(default=False)
 
