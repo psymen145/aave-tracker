@@ -1,8 +1,11 @@
 from celery import shared_task
 from web3 import Web3
 import os
+import logging
 
 from tracker.models import Contract, Wallet, Position
+
+logger = logging.getLogger(__name__)
 
 endpoint = 'https://mainnet.infura.io/v3/67949a338f7a4b8a8c3be4fddf71f95d'
 MAINNET_NETWORK_ID = 2
@@ -28,7 +31,7 @@ def pull_positions():
     for log in logs:
         topics = log.get("topics")
         if not topics:
-            print("error, missing topics")
+            logger.error("error, missing topics")
             continue
 
         # topics are a list of params used, first is always the event signature
@@ -37,7 +40,7 @@ def pull_positions():
 
         all_address_interacted.add(user_addr)
 
-    print(f"{len(all_address_interacted)} addresses supplied to with aave v3 eth mainnet")
+    logger.info(f"{len(all_address_interacted)} addresses supplied to with aave v3 eth mainnet")
 
     # create all wallets that we don't have stored yet
     db_addresses = Wallet.objects.filter(
@@ -93,6 +96,13 @@ def pull_positions():
 
         # TODO: add some logging
         count += 1
+
+    logger.info(
+        "Finished running pull_positions",
+        extra={
+            "updated_or_created_position_count": count
+        }
+    )
 
 def get_logs(from_block, to_block, address, topic0, api_key):
     import requests

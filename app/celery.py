@@ -22,7 +22,9 @@ app.config_from_object('django.conf:settings', namespace='CELERY')
 # discover and load tasks.py from from all registered Django apps
 app.autodiscover_tasks(lambda: settings.INSTALLED_APPS)
 
+# CELERY BEAT SCHEDULE
 app.conf.beat_schedule = {
+    # pull every hour
     'pull-aave-positions': {
         'task': 'tracker.tasks.pull_positions',
         'schedule': crontab(minute=0, hour='*'),

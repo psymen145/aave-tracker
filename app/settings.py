@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 
 from pathlib import Path
 import os
+import logging
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -131,3 +132,22 @@ STATIC_URL = "static/"
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+
+"""
+Set up logging on import, so all logs will be caught before any application code gets ran 
+"""
+def configure_logging():
+    level = logging.INFO
+    format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+
+    if os.getenv('ENVIRONMENT') == 'prod':
+        # Production logging configuration
+        # Add CloudWatch or other production logging setup here
+        pass
+    else:
+        # Development logging configuration
+        # no "filename" or "stream" arg will default to stdout
+        logging.basicConfig(level=level, format=format)
+
+configure_logging()
