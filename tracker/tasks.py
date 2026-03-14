@@ -27,6 +27,10 @@ def pull_positions():
     api_key = os.environ.get("ETHERSCAN_API_KEY")
 
     logs = get_logs(from_block, to_block, aave_v3_pool_model.address, topic0, api_key)
+    if not logs:
+        logger.error("No logs returned from Etherscan — aborting pull_positions")
+        return
+
     all_address_interacted = set()
     for log in logs:
         topics = log.get("topics")
@@ -104,31 +108,49 @@ def pull_positions():
         }
     )
 
+PAGE_SIZE = 1000
+
+
 def get_logs(from_block, to_block, address, topic0, api_key):
     import requests
-    import json
 
     url = "https://api.etherscan.io/api"
-    querystring = {
-        "module": "logs",
-        "action": "getLogs",
-        "fromBlock": from_block,
-        "toBlock": to_block,
-        "address": address,
-        "topic0": topic0,
-        "apikey": api_key
-    }
+    all_results = []
+    page = 1
 
-    response = requests.request("GET", url, params=querystring)
+    while True:
+        querystring = {
+            "module": "logs",
+            "action": "getLogs",
+            "fromBlock": from_block,
+            "toBlock": to_block,
+            "address": address,
+            "topic0": topic0,
+            "page": page,
+            "offset": PAGE_SIZE,
+            "apikey": api_key,
+        }
 
-    data = json.loads(response.text)
+        response = requests.get(url, params=querystring)
+        data = response.json()
 
-    if not data.get("status"):
-        print("cant get status")
-        return
+        if data.get("status") != "1":
+            logger.error(
+                "Etherscan getLogs error (page %d): %s",
+                page,
+                data.get("message") or data.get("result"),
+            )
+            break
 
-    result = data.get("result")
-    return result
+        results = data["result"]
+        all_results.extend(results)
+
+        if len(results) < PAGE_SIZE:
+            break  # last page reached
+
+        page += 1
+
+    return all_results
 
 
 def test():
