@@ -1,4 +1,7 @@
+from django.http import JsonResponse
 from django.shortcuts import render
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_POST
 
 from tracker.models import Position
 
@@ -76,3 +79,12 @@ def dashboard(request):
         "safe_count":     sum(1 for p in position_data if p["risk"] == "safe"),
     }
     return render(request, "tracker/dashboard.html", context)
+
+
+@csrf_exempt
+@require_POST
+def trigger_liquidation(request, wallet_address):
+    """Queue a liquidation task for the given wallet address."""
+    from tracker.tasks import liquidate_position
+    task = liquidate_position.delay(wallet_address)
+    return JsonResponse({"status": "queued", "task_id": task.id})

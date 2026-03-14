@@ -239,6 +239,24 @@
     /* hidden */
     .hidden { display: none !important; }
 
+    /* liquidate button */
+    .liq-btn {
+      padding: 5px 12px;
+      border-radius: 6px;
+      border: 1px solid #f8514966;
+      background: #3d0a0a;
+      color: #f85149;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .liq-btn:hover:not(:disabled) { background: #5a1010; border-color: #f85149; }
+    .liq-btn:disabled { opacity: 0.5; cursor: default; }
+    .liq-queued { color: #d29922; font-size: 12px; }
+    .liq-done   { color: #3fb950; font-size: 12px; }
+    .liq-error  { color: #f85149; font-size: 12px; }
+
     /* auto-refresh toggle */
     .auto-refresh-wrap {
       display: flex;
@@ -256,6 +274,8 @@
       tbody td:nth-child(5),
       thead th:nth-child(6),
       tbody td:nth-child(6) { display: none; }
+      thead th:nth-child(8),
+      tbody td:nth-child(8) { display: none; }
     }
   </style>
 </head>
@@ -327,6 +347,7 @@
           <th>Network</th>
           <th>Last Updated</th>
           <th>Risk Level</th>
+          <th>Action</th>
         </tr>
       </thead>
       <tbody>
@@ -356,6 +377,15 @@
           <td class="network-name">{{ item.position.network.name|default:"—" }}</td>
           <td class="ts">{{ item.position.last_modified|date:"M d, H:i" }}</td>
           <td><span class="risk-badge risk-{{ item.risk }}">{{ item.risk }}</span></td>
+          <td>
+            {% if item.risk == "liquidating" %}
+            <button
+              class="liq-btn"
+              data-address="{{ item.position.wallet.address }}"
+              onclick="triggerLiquidation(this)"
+            >Liquidate</button>
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>
@@ -407,6 +437,27 @@
   // Timestamp
   document.getElementById('last-refreshed').textContent =
     'Updated ' + new Date().toLocaleTimeString();
+
+  async function triggerLiquidation(btn) {
+    const address = btn.dataset.address;
+    btn.disabled = true;
+    btn.textContent = 'Queuing…';
+
+    try {
+      const resp = await fetch(`/liquidate/${address}/`, { method: 'POST' });
+      const data = await resp.json();
+      const td = btn.parentElement;
+      if (data.status === 'queued') {
+        td.innerHTML = `<span class="liq-queued">Queued ✓</span>`;
+      } else {
+        td.innerHTML = `<span class="liq-error">${data.error || 'Error'}</span>`;
+      }
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = 'Liquidate';
+      console.error('Liquidation request failed', e);
+    }
+  }
 </script>
 
 </body>

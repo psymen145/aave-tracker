@@ -18,11 +18,12 @@ from django.contrib import admin
 from django.urls import path
 from graphene_django.views import GraphQLView
 
-from tracker.views import dashboard
+from tracker.views import dashboard, trigger_liquidation
 
 
 urlpatterns = [
     path("", dashboard, name="dashboard"),
+    path("liquidate/<str:wallet_address>/", trigger_liquidation, name="trigger_liquidation"),
     path("admin/", admin.site.urls),
     path('graphql/', GraphQLView.as_view(graphiql=True)),
 ]
