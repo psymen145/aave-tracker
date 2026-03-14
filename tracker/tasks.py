@@ -135,30 +135,35 @@ ERC20_ABI = [
 @shared_task
 def liquidate_position(wallet_address: str) -> dict:
     """
-    Liquidate an undercollateralised Aave V3 position.
+    Liquidate an undercollateralised Aave V3 position using a flash loan.
 
-    How it works:
-      1. Verify the health factor is below 1.0.
-      2. Iterate every Aave reserve to find the user's highest-value collateral
-         asset (aToken balance) and highest-value debt asset (variableDebtToken
-         balance).
-      3. Approve the Pool to spend our debt token.
-      4. Call liquidationCall() — Aave automatically caps the repayment at 50 %
-         of the debt (the protocol's close factor), so passing uint256.max is
-         safe and repays the maximum allowed in one transaction.
-      5. Return the tx hash on success.
+    The on-chain FlashLiquidator contract (contracts/FlashLiquidator.sol)
+    handles the full flow in a single transaction:
+      1. Flash-borrows the debt token from Aave (0.05 % fee)
+      2. Calls liquidationCall() → receives collateral + bonus (5–10 %)
+      3. Swaps collateral → debt token on Uniswap V3
+      4. Repays the flash loan
+      5. Keeps the net profit inside the contract
 
-    The liquidation bonus (5–10 % depending on the collateral asset) is the
-    profit: you repay X of debt and receive X * (1 + bonus) of collateral.
+    This means the caller needs only ETH for gas — no debt-token capital.
 
-    Required env var:
-      LIQUIDATOR_PRIVATE_KEY  – private key of a wallet that holds the debt
-                                 token and enough ETH for gas.
+    Required env vars:
+      LIQUIDATOR_PRIVATE_KEY       – private key (gas money only)
+      FLASH_LIQUIDATOR_ADDRESS     – deployed FlashLiquidator contract address
+      UNISWAP_SWAP_FEE (optional)  – Uniswap V3 fee tier in bps*100
+                                     (500=0.05 %, 3000=0.3 %, 10000=1 %)
+                                     defaults to 3000
     """
     private_key = os.environ.get("LIQUIDATOR_PRIVATE_KEY")
+    flash_liq_address = os.environ.get("FLASH_LIQUIDATOR_ADDRESS")
     if not private_key:
         logger.error("LIQUIDATOR_PRIVATE_KEY not set — cannot liquidate")
         return {"error": "LIQUIDATOR_PRIVATE_KEY not configured"}
+    if not flash_liq_address:
+        logger.error("FLASH_LIQUIDATOR_ADDRESS not set — cannot liquidate")
+        return {"error": "FLASH_LIQUIDATOR_ADDRESS not configured"}
+
+    swap_fee = int(os.environ.get("UNISWAP_SWAP_FEE", "3000"))
 
     w3 = Web3(Web3.HTTPProvider(endpoint))
     liquidator_address = w3.eth.account.from_key(private_key).address
@@ -176,9 +181,11 @@ def liquidate_position(wallet_address: str) -> dict:
         logger.info("%s — %s", wallet_address, msg)
         return {"error": msg}
 
-    logger.info("Liquidating %s (HF=%.4f)", wallet_address, health_factor)
+    logger.info("Liquidating %s (HF=%.4f) via flash loan", wallet_address, health_factor)
 
-    # Find the reserve with the most collateral and the reserve with the most debt
+    # Find the reserve with the most collateral and the reserve with the most debt.
+    # We pick by raw token balance; for a more accurate ranking you'd convert to
+    # USD using the oracle, but largest balance is a good heuristic in practice.
     reserves = pool.functions.getReservesList().call()
     best_collateral_asset = None
     best_collateral_balance = 0
@@ -187,8 +194,8 @@ def liquidate_position(wallet_address: str) -> dict:
 
     for reserve in reserves:
         reserve_data = pool.functions.getReserveData(reserve).call()
-        a_token_addr = reserve_data[8]        # aTokenAddress (collateral)
-        var_debt_addr = reserve_data[10]      # variableDebtTokenAddress
+        a_token_addr = reserve_data[8]    # aTokenAddress (collateral)
+        var_debt_addr = reserve_data[10]  # variableDebtTokenAddress
 
         a_token = w3.eth.contract(address=a_token_addr, abi=ERC20_ABI)
         var_debt_token = w3.eth.contract(address=var_debt_addr, abi=ERC20_ABI)
@@ -209,49 +216,57 @@ def liquidate_position(wallet_address: str) -> dict:
         logger.error("%s — %s", wallet_address, msg)
         return {"error": msg}
 
+    # Aave's close factor is 50 %: the most we can liquidate in one call.
+    debt_to_cover = best_debt_balance // 2
+
     logger.info(
-        "Best pair for %s: collateral=%s debt=%s debt_balance=%s",
-        wallet_address, best_collateral_asset, best_debt_asset, best_debt_balance,
+        "Flash liquidation for %s: collateral=%s debt=%s debt_to_cover=%s swap_fee=%s",
+        wallet_address, best_collateral_asset, best_debt_asset, debt_to_cover, swap_fee,
     )
 
-    MAX_UINT256 = 2 ** 256 - 1
+    # ABI for the single FlashLiquidator.liquidate() entry point
+    flash_liq_abi = [
+        {
+            "inputs": [
+                {"internalType": "address", "name": "collateralAsset", "type": "address"},
+                {"internalType": "address", "name": "debtAsset",       "type": "address"},
+                {"internalType": "address", "name": "borrower",        "type": "address"},
+                {"internalType": "uint256", "name": "debtAmount",      "type": "uint256"},
+                {"internalType": "uint24",  "name": "swapFee",         "type": "uint24"},
+            ],
+            "name": "liquidate",
+            "outputs": [],
+            "stateMutability": "nonpayable",
+            "type": "function",
+        }
+    ]
 
-    # Approve the Pool to pull our debt tokens
-    debt_token = w3.eth.contract(address=best_debt_asset, abi=ERC20_ABI)
-    approve_tx = debt_token.functions.approve(
-        pool_model.address, MAX_UINT256
+    flash_liq = w3.eth.contract(
+        address=Web3.to_checksum_address(flash_liq_address),
+        abi=flash_liq_abi,
+    )
+
+    tx = flash_liq.functions.liquidate(
+        best_collateral_asset,
+        best_debt_asset,
+        user,
+        debt_to_cover,
+        swap_fee,
     ).build_transaction({
         "from": liquidator_address,
         "nonce": w3.eth.get_transaction_count(liquidator_address),
-        "gas": 100_000,
+        "gas": 700_000,
     })
-    signed_approve = w3.eth.account.sign_transaction(approve_tx, private_key)
-    approve_hash = w3.eth.send_raw_transaction(signed_approve.raw_transaction)
-    w3.eth.wait_for_transaction_receipt(approve_hash)
-    logger.info("Approved debt token spend, approve_tx=%s", approve_hash.hex())
-
-    # Execute the liquidation
-    liq_tx = pool.functions.liquidationCall(
-        best_collateral_asset,   # collateralAsset
-        best_debt_asset,         # debtAsset
-        user,                    # borrower to liquidate
-        MAX_UINT256,             # debtToCover — Aave caps at 50 % automatically
-        False,                   # receiveAToken — receive underlying collateral
-    ).build_transaction({
-        "from": liquidator_address,
-        "nonce": w3.eth.get_transaction_count(liquidator_address),
-        "gas": 500_000,
-    })
-    signed_liq = w3.eth.account.sign_transaction(liq_tx, private_key)
-    liq_hash = w3.eth.send_raw_transaction(signed_liq.raw_transaction)
-    receipt = w3.eth.wait_for_transaction_receipt(liq_hash)
+    signed = w3.eth.account.sign_transaction(tx, private_key)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
 
     if receipt["status"] == 1:
-        logger.info("Liquidation succeeded for %s, tx=%s", wallet_address, liq_hash.hex())
-        return {"success": True, "tx": liq_hash.hex()}
+        logger.info("Flash liquidation succeeded for %s, tx=%s", wallet_address, tx_hash.hex())
+        return {"success": True, "tx": tx_hash.hex()}
     else:
-        logger.error("Liquidation reverted for %s, tx=%s", wallet_address, liq_hash.hex())
-        return {"error": "Transaction reverted", "tx": liq_hash.hex()}
+        logger.error("Flash liquidation reverted for %s, tx=%s", wallet_address, tx_hash.hex())
+        return {"error": "Transaction reverted", "tx": tx_hash.hex()}
 
 
 def get_logs(from_block, to_block, address, topic0, api_key):
