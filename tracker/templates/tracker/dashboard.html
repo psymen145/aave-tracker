@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Aave V3 Liquidation Tracker</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      padding: 16px 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    header h1 {
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+    }
+    header h1 span { color: #7c3aed; }
+    .badge {
+      background: #7c3aed22;
+      border: 1px solid #7c3aed55;
+      color: #a78bfa;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 20px;
+      letter-spacing: 0.5px;
+    }
+    .refresh-info {
+      font-size: 12px;
+      color: #8b949e;
+    }
+
+    /* ── Main layout ── */
+    main {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 32px;
+    }
+
+    /* ── Stat cards ── */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+    .stat-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 20px 24px;
+    }
+    .stat-card .label {
+      font-size: 12px;
+      color: #8b949e;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      margin-bottom: 8px;
+    }
+    .stat-card .value {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -1px;
+    }
+    .stat-card.critical .value { color: #f85149; }
+    .stat-card.warning  .value { color: #d29922; }
+    .stat-card.safe     .value { color: #3fb950; }
+    .stat-card.total    .value { color: #58a6ff; }
+
+    /* ── Filter bar ── */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .toolbar label {
+      font-size: 13px;
+      color: #8b949e;
+    }
+    .filter-btn {
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: 1px solid #30363d;
+      background: #161b22;
+      color: #e6edf3;
+      font-size: 13px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .filter-btn:hover { border-color: #58a6ff; }
+    .filter-btn.active { background: #1f3a5f; border-color: #58a6ff; color: #58a6ff; }
+    .filter-btn.active-red { background: #3d1f1f; border-color: #f85149; color: #f85149; }
+    .filter-btn.active-yellow { background: #3d2e0a; border-color: #d29922; color: #d29922; }
+    .spacer { flex: 1; }
+    .refresh-btn {
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: 1px solid #30363d;
+      background: #161b22;
+      color: #8b949e;
+      font-size: 13px;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .refresh-btn:hover { color: #e6edf3; border-color: #8b949e; }
+
+    /* ── Table ── */
+    .table-wrap {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    thead tr {
+      background: #0d1117;
+      border-bottom: 1px solid #30363d;
+    }
+    thead th {
+      padding: 12px 16px;
+      text-align: left;
+      font-weight: 600;
+      color: #8b949e;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      white-space: nowrap;
+    }
+    tbody tr {
+      border-bottom: 1px solid #21262d;
+      transition: background 0.1s;
+    }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: #1c2128; }
+    tbody td {
+      padding: 13px 16px;
+      vertical-align: middle;
+    }
+
+    /* rank */
+    .rank { color: #484f58; font-weight: 600; width: 48px; }
+
+    /* address */
+    .address {
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      color: #58a6ff;
+    }
+    .address a { color: inherit; text-decoration: none; }
+    .address a:hover { text-decoration: underline; }
+
+    /* health factor */
+    .hf-cell { font-weight: 700; font-size: 15px; }
+    .hf-bar-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .hf-bar-bg {
+      flex: 1;
+      height: 5px;
+      background: #21262d;
+      border-radius: 3px;
+      overflow: hidden;
+      min-width: 80px;
+      max-width: 140px;
+    }
+    .hf-bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.3s;
+    }
+
+    /* risk badge */
+    .risk-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      white-space: nowrap;
+    }
+    .risk-badge::before {
+      content: '';
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .risk-liquidating { background: #3d0a0a; color: #f85149; border: 1px solid #f8514944; }
+    .risk-critical    { background: #3d1a0a; color: #ff7b50; border: 1px solid #ff7b5044; }
+    .risk-warning     { background: #3d2e0a; color: #d29922; border: 1px solid #d2992244; }
+    .risk-safe        { background: #0d2e1a; color: #3fb950; border: 1px solid #3fb95044; }
+
+    /* collateral */
+    .collateral { font-weight: 600; color: #e6edf3; }
+    .collateral-zero { color: #484f58; }
+
+    /* network */
+    .network-name { color: #8b949e; font-size: 12px; }
+
+    /* last updated */
+    .ts { color: #484f58; font-size: 12px; }
+
+    /* empty state */
+    .empty {
+      text-align: center;
+      padding: 64px 32px;
+      color: #484f58;
+    }
+    .empty h3 { font-size: 18px; margin-bottom: 8px; color: #8b949e; }
+
+    /* hidden */
+    .hidden { display: none !important; }
+
+    /* auto-refresh toggle */
+    .auto-refresh-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: #8b949e;
+    }
+    input[type="checkbox"] { accent-color: #7c3aed; cursor: pointer; }
+
+    @media (max-width: 768px) {
+      main { padding: 16px; }
+      .stats { grid-template-columns: 1fr 1fr; }
+      thead th:nth-child(5),
+      tbody td:nth-child(5),
+      thead th:nth-child(6),
+      tbody td:nth-child(6) { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1><span>Aave</span> V3 — Liquidation Tracker</h1>
+  <div style="display:flex;align-items:center;gap:16px;">
+    <span class="badge">ETH Mainnet</span>
+    <span class="refresh-info" id="last-refreshed">
+      {% if last_refreshed %}Updated {{ last_refreshed }}{% else %}Live data{% endif %}
+    </span>
+  </div>
+</header>
+
+<main>
+  <!-- Stat cards -->
+  <div class="stats">
+    <div class="stat-card total">
+      <div class="label">Tracked Positions</div>
+      <div class="value">{{ total_count }}</div>
+    </div>
+    <div class="stat-card critical">
+      <div class="label">Critical (HF &lt; 1.1)</div>
+      <div class="value">{{ critical_count }}</div>
+    </div>
+    <div class="stat-card warning">
+      <div class="label">Warning (HF 1.1–1.5)</div>
+      <div class="value">{{ warning_count }}</div>
+    </div>
+    <div class="stat-card safe">
+      <div class="label">Safe (HF &gt; 1.5)</div>
+      <div class="value">{{ safe_count }}</div>
+    </div>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <span class="label">Filter:</span>
+    <button class="filter-btn active" data-filter="all" onclick="setFilter('all', this)">All</button>
+    <button class="filter-btn" data-filter="liquidating" onclick="setFilter('liquidating', this)">Liquidating</button>
+    <button class="filter-btn" data-filter="critical" onclick="setFilter('critical', this)">Critical</button>
+    <button class="filter-btn" data-filter="warning" onclick="setFilter('warning', this)">Warning</button>
+    <button class="filter-btn" data-filter="safe" onclick="setFilter('safe', this)">Safe</button>
+    <div class="spacer"></div>
+    <div class="auto-refresh-wrap">
+      <input type="checkbox" id="auto-refresh" onchange="toggleAutoRefresh(this)" />
+      <label for="auto-refresh">Auto-refresh (30s)</label>
+    </div>
+    <button class="refresh-btn" onclick="window.location.reload()">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+        <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+        <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+      </svg>
+      Refresh
+    </button>
+  </div>
+
+  <!-- Table -->
+  <div class="table-wrap">
+    {% if positions %}
+    <table id="positions-table">
+      <thead>
+        <tr>
+          <th class="rank">#</th>
+          <th>Wallet Address</th>
+          <th>Health Factor</th>
+          <th>Collateral (USD)</th>
+          <th>Network</th>
+          <th>Last Updated</th>
+          <th>Risk Level</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in positions %}
+        <tr data-risk="{{ item.risk }}">
+          <td class="rank">{{ forloop.counter }}</td>
+          <td class="address">
+            <a href="https://app.aave.com/reserve-overview/?underlyingAsset={{ item.position.wallet.address }}&marketName=proto_mainnet_v3" target="_blank" rel="noopener noreferrer">
+              {{ item.position.wallet.address|slice:":8" }}…{{ item.position.wallet.address|slice:"-6:" }}
+            </a>
+          </td>
+          <td>
+            <div class="hf-bar-wrap">
+              <span class="hf-cell" style="color: {{ item.hf_color }};">{{ item.health_factor }}</span>
+              <div class="hf-bar-bg">
+                <div class="hf-bar-fill" style="width: {{ item.hf_bar_pct }}%; background: {{ item.hf_color }};"></div>
+              </div>
+            </div>
+          </td>
+          <td>
+            {% if item.total_usd_collateral > 0 %}
+              <span class="collateral">${{ item.total_usd_collateral|floatformat:2 }}</span>
+            {% else %}
+              <span class="collateral-zero">—</span>
+            {% endif %}
+          </td>
+          <td class="network-name">{{ item.position.network.name|default:"—" }}</td>
+          <td class="ts">{{ item.position.last_modified|date:"M d, H:i" }}</td>
+          <td><span class="risk-badge risk-{{ item.risk }}">{{ item.risk }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+      <h3>No positions found</h3>
+      <p>Run the <code>pull_positions</code> Celery task to populate data.</p>
+    </div>
+    {% endif %}
+  </div>
+</main>
+
+<script>
+  let autoRefreshTimer = null;
+
+  function setFilter(filter, btn) {
+    // Update button styles
+    document.querySelectorAll('.filter-btn').forEach(b => {
+      b.classList.remove('active', 'active-red', 'active-yellow');
+    });
+    if (filter === 'all') btn.classList.add('active');
+    else if (filter === 'liquidating' || filter === 'critical') btn.classList.add('active-red');
+    else if (filter === 'warning') btn.classList.add('active-yellow');
+    else btn.classList.add('active');
+
+    // Show/hide rows
+    const rows = document.querySelectorAll('#positions-table tbody tr');
+    let visibleRank = 1;
+    rows.forEach(row => {
+      const risk = row.dataset.risk;
+      const show = filter === 'all' || risk === filter;
+      row.classList.toggle('hidden', !show);
+      if (show) {
+        row.querySelector('.rank').textContent = visibleRank++;
+      }
+    });
+  }
+
+  function toggleAutoRefresh(checkbox) {
+    if (checkbox.checked) {
+      autoRefreshTimer = setInterval(() => window.location.reload(), 30000);
+    } else {
+      clearInterval(autoRefreshTimer);
+      autoRefreshTimer = null;
+    }
+  }
+
+  // Timestamp
+  document.getElementById('last-refreshed').textContent =
+    'Updated ' + new Date().toLocaleTimeString();
+</script>
+
+</body>
+</html>
