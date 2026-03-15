@@ -83,8 +83,13 @@ def dashboard(request):
 
 @csrf_exempt
 @require_POST
-def trigger_liquidation(request, wallet_address):
-    """Queue a liquidation task for the given wallet address."""
+def trigger_liquidation(request, wallet_address, network_id):
+    """Queue a liquidation task for the given wallet address and network."""
+    from tracker.models import Network
     from tracker.tasks import liquidate_position
-    task = liquidate_position.delay(wallet_address)
+    try:
+        network = Network.objects.get(pk=network_id)
+    except Network.DoesNotExist:
+        return JsonResponse({"error": "Unknown network"}, status=404)
+    task = liquidate_position.delay(wallet_address, network.name)
     return JsonResponse({"status": "queued", "task_id": task.id})

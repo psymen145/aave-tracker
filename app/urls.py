@@ -23,7 +23,7 @@ from tracker.views import dashboard, trigger_liquidation
 
 urlpatterns = [
     path("", dashboard, name="dashboard"),
-    path("liquidate/<str:wallet_address>/", trigger_liquidation, name="trigger_liquidation"),
+    path("liquidate/<str:wallet_address>/<int:network_id>/", trigger_liquidation, name="trigger_liquidation"),
     path("admin/", admin.site.urls),
     path('graphql/', GraphQLView.as_view(graphiql=True)),
 ]

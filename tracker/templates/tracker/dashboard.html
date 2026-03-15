@@ -224,6 +224,7 @@
 
     /* network */
     .network-name { color: #8b949e; font-size: 12px; }
+    .filter-btn.active-chain { background: #1a2a3a; border-color: #a78bfa; color: #a78bfa; }
 
     /* last updated */
     .ts { color: #484f58; font-size: 12px; }
@@ -314,12 +315,18 @@
 
   <!-- Toolbar -->
   <div class="toolbar">
-    <span class="label">Filter:</span>
+    <span class="label">Risk:</span>
     <button class="filter-btn active" data-filter="all" onclick="setFilter('all', this)">All</button>
     <button class="filter-btn" data-filter="liquidating" onclick="setFilter('liquidating', this)">Liquidating</button>
     <button class="filter-btn" data-filter="critical" onclick="setFilter('critical', this)">Critical</button>
     <button class="filter-btn" data-filter="warning" onclick="setFilter('warning', this)">Warning</button>
     <button class="filter-btn" data-filter="safe" onclick="setFilter('safe', this)">Safe</button>
+    <span class="label" style="margin-left:12px;">Chain:</span>
+    <button class="filter-btn active-chain" data-chain="all" onclick="setChain('all', this)">All</button>
+    <button class="filter-btn" data-chain="Ethereum Mainnet" onclick="setChain('Ethereum Mainnet', this)">Ethereum</button>
+    <button class="filter-btn" data-chain="Arbitrum One" onclick="setChain('Arbitrum One', this)">Arbitrum</button>
+    <button class="filter-btn" data-chain="Optimism" onclick="setChain('Optimism', this)">Optimism</button>
+    <button class="filter-btn" data-chain="Base" onclick="setChain('Base', this)">Base</button>
     <div class="spacer"></div>
     <div class="auto-refresh-wrap">
       <input type="checkbox" id="auto-refresh" onchange="toggleAutoRefresh(this)" />
@@ -352,7 +359,7 @@
       </thead>
       <tbody>
         {% for item in positions %}
-        <tr data-risk="{{ item.risk }}">
+        <tr data-risk="{{ item.risk }}" data-network="{{ item.position.network.name }}">
           <td class="rank">{{ forloop.counter }}</td>
           <td class="address">
             <a href="https://app.aave.com/reserve-overview/?underlyingAsset={{ item.position.wallet.address }}&marketName=proto_mainnet_v3" target="_blank" rel="noopener noreferrer">
@@ -382,6 +389,7 @@
             <button
               class="liq-btn"
               data-address="{{ item.position.wallet.address }}"
+              data-network-id="{{ item.position.network_id }}"
               onclick="triggerLiquidation(this)"
             >Liquidate</button>
             {% endif %}
@@ -401,28 +409,40 @@
 
 <script>
   let autoRefreshTimer = null;
+  let activeRisk  = 'all';
+  let activeChain = 'all';
+
+  function applyFilters() {
+    const rows = document.querySelectorAll('#positions-table tbody tr');
+    let visibleRank = 1;
+    rows.forEach(row => {
+      const riskMatch  = activeRisk  === 'all' || row.dataset.risk    === activeRisk;
+      const chainMatch = activeChain === 'all' || row.dataset.network === activeChain;
+      const show = riskMatch && chainMatch;
+      row.classList.toggle('hidden', !show);
+      if (show) row.querySelector('.rank').textContent = visibleRank++;
+    });
+  }
 
   function setFilter(filter, btn) {
-    // Update button styles
-    document.querySelectorAll('.filter-btn').forEach(b => {
+    activeRisk = filter;
+    document.querySelectorAll('[data-filter]').forEach(b => {
       b.classList.remove('active', 'active-red', 'active-yellow');
     });
     if (filter === 'all') btn.classList.add('active');
     else if (filter === 'liquidating' || filter === 'critical') btn.classList.add('active-red');
     else if (filter === 'warning') btn.classList.add('active-yellow');
     else btn.classList.add('active');
+    applyFilters();
+  }
 
-    // Show/hide rows
-    const rows = document.querySelectorAll('#positions-table tbody tr');
-    let visibleRank = 1;
-    rows.forEach(row => {
-      const risk = row.dataset.risk;
-      const show = filter === 'all' || risk === filter;
-      row.classList.toggle('hidden', !show);
-      if (show) {
-        row.querySelector('.rank').textContent = visibleRank++;
-      }
+  function setChain(chain, btn) {
+    activeChain = chain;
+    document.querySelectorAll('[data-chain]').forEach(b => {
+      b.classList.remove('active-chain');
     });
+    btn.classList.add('active-chain');
+    applyFilters();
   }
 
   function toggleAutoRefresh(checkbox) {
@@ -439,12 +459,13 @@
     'Updated ' + new Date().toLocaleTimeString();
 
   async function triggerLiquidation(btn) {
-    const address = btn.dataset.address;
+    const address   = btn.dataset.address;
+    const networkId = btn.dataset.networkId;
     btn.disabled = true;
     btn.textContent = 'Queuing…';
 
     try {
-      const resp = await fetch(`/liquidate/${address}/`, { method: 'POST' });
+      const resp = await fetch(`/liquidate/${address}/${networkId}/`, { method: 'POST' });
       const data = await resp.json();
       const td = btn.parentElement;
       if (data.status === 'queued') {

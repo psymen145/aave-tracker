@@ -7,105 +7,146 @@ from tracker.models import Contract, Wallet, Position
 
 logger = logging.getLogger(__name__)
 
-endpoint = 'https://mainnet.infura.io/v3/67949a338f7a4b8a8c3be4fddf71f95d'
-MAINNET_NETWORK_ID = 2
+_INFURA_KEY = "67949a338f7a4b8a8c3be4fddf71f95d"
+
+# Per-chain configuration.  Add entries here as new Aave V3 deployments are
+# supported.  Keys must match the Network.name stored in the database.
+CHAIN_CONFIG = {
+    "Ethereum Mainnet": {
+        "rpc":           f"https://mainnet.infura.io/v3/{_INFURA_KEY}",
+        "explorer_url":  "https://api.etherscan.io/api",
+        "api_key_env":   "ETHERSCAN_API_KEY",
+        "from_block":    "16988017",
+        "flash_liq_env": "FLASH_LIQUIDATOR_ADDRESS_MAINNET",
+        "swap_fee_env":  "UNISWAP_SWAP_FEE_MAINNET",
+        # Uniswap V3 SwapRouter
+        "uniswap_router": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    },
+    "Arbitrum One": {
+        "rpc":           f"https://arbitrum-mainnet.infura.io/v3/{_INFURA_KEY}",
+        "explorer_url":  "https://api.arbiscan.io/api",
+        "api_key_env":   "ARBISCAN_API_KEY",
+        "from_block":    "7742429",
+        "flash_liq_env": "FLASH_LIQUIDATOR_ADDRESS_ARBITRUM",
+        "swap_fee_env":  "UNISWAP_SWAP_FEE_ARBITRUM",
+        "uniswap_router": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    },
+    "Optimism": {
+        "rpc":           f"https://optimism-mainnet.infura.io/v3/{_INFURA_KEY}",
+        "explorer_url":  "https://api-optimistic.etherscan.io/api",
+        "api_key_env":   "OPSCAN_API_KEY",
+        "from_block":    "4000000",
+        "flash_liq_env": "FLASH_LIQUIDATOR_ADDRESS_OPTIMISM",
+        "swap_fee_env":  "UNISWAP_SWAP_FEE_OPTIMISM",
+        "uniswap_router": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    },
+    "Base": {
+        "rpc":           f"https://base-mainnet.infura.io/v3/{_INFURA_KEY}",
+        "explorer_url":  "https://api.basescan.org/api",
+        "api_key_env":   "BASESCAN_API_KEY",
+        "from_block":    "2357129",
+        "flash_liq_env": "FLASH_LIQUIDATOR_ADDRESS_BASE",
+        "swap_fee_env":  "UNISWAP_SWAP_FEE_BASE",
+        # Uniswap V3 SwapRouter02 on Base
+        "uniswap_router": "0x2626664c2603336E57B271c5C0b26F421741e481",
+    },
+}
+
 
 @shared_task
 def pull_positions():
-    # https://arbitrum-goerli.infura.io/v3/67949a338f7a4b8a8c3be4fddf71f95d
+    """Pull Aave V3 positions for every configured chain."""
+    pool_contracts = (
+        Contract.objects
+        .filter(name="Pool", deleted=False)
+        .select_related("network")
+    )
+    for pool_model in pool_contracts:
+        network_name = pool_model.network.name
+        config = CHAIN_CONFIG.get(network_name)
+        if not config:
+            logger.info("No CHAIN_CONFIG entry for '%s' — skipping", network_name)
+            continue
+        try:
+            _pull_chain(pool_model, config)
+        except Exception:
+            logger.exception("pull_positions failed for %s", network_name)
 
-    w3 = Web3(Web3.HTTPProvider(endpoint))
-    aave_v3_pool_model = Contract.objects.get(name="Pool", network_id=MAINNET_NETWORK_ID)
-    pool_contract_obj = w3.eth.contract(address=aave_v3_pool_model.address, abi=aave_v3_pool_model.abi)
 
-    # when aave v3 was deployed on mainnet
-    from_block = "16988017"
-    to_block = "latest"
+def _pull_chain(pool_model, config):
+    """Pull positions for a single chain."""
+    network_id = pool_model.network_id
+    network_name = pool_model.network.name
+
+    w3 = Web3(Web3.HTTPProvider(config["rpc"]))
+    pool_contract_obj = w3.eth.contract(address=pool_model.address, abi=pool_model.abi)
 
     event_signature = "Supply(address,address,address,uint256,uint16)"
-    topic0 = Web3.keccak(text=event_signature).hex() # 0x2b627736bca15cd5381dcf80b0bf11fd197d01a037c52b927a881a10fb73ba61
-    api_key = os.environ.get("ETHERSCAN_API_KEY")
+    topic0 = Web3.keccak(text=event_signature).hex()
+    api_key = os.environ.get(config["api_key_env"])
 
-    logs = get_logs(from_block, to_block, aave_v3_pool_model.address, topic0, api_key)
+    logs = get_logs(
+        config["from_block"], "latest",
+        pool_model.address, topic0,
+        api_key, config["explorer_url"],
+    )
     if not logs:
-        logger.error("No logs returned from Etherscan — aborting pull_positions")
+        logger.error("No logs returned for %s — skipping", network_name)
         return
 
     all_address_interacted = set()
     for log in logs:
         topics = log.get("topics")
         if not topics:
-            logger.error("error, missing topics")
             continue
-
-        # topics are a list of params used, first is always the event signature
-        # addresses are padded
         user_addr = f"0x{topics[2][26:]}"
-
         all_address_interacted.add(user_addr)
 
-    logger.info(f"{len(all_address_interacted)} addresses supplied to with aave v3 eth mainnet")
+    logger.info("%d unique suppliers on %s", len(all_address_interacted), network_name)
 
-    # create all wallets that we don't have stored yet
-    db_addresses = Wallet.objects.filter(
-        network_id=MAINNET_NETWORK_ID,
-        deleted=False,
-    ).values_list('address', flat=True)
-    db_addresses_set = set(db_addresses)
-    addresses_not_in_db = all_address_interacted - db_addresses_set
-    wallets_to_create = [
-        Wallet(
-            address=address,
-            network_id=MAINNET_NETWORK_ID,
-        ) for address in addresses_not_in_db
-    ]
-    Wallet.objects.bulk_create(wallets_to_create)
+    # Upsert wallets
+    db_addresses = set(
+        Wallet.objects.filter(network_id=network_id, deleted=False)
+        .values_list("address", flat=True)
+    )
+    Wallet.objects.bulk_create([
+        Wallet(address=addr, network_id=network_id)
+        for addr in all_address_interacted - db_addresses
+    ])
+
+    wallet_address_to_id = {
+        w.address: w.id
+        for w in Wallet.objects.filter(
+            network_id=network_id,
+            address__in=all_address_interacted,
+            deleted=False,
+        )
+    }
 
     count = 0
-    wallet_address_to_model_id = dict()
-    all_wallet_models = Wallet.objects.filter(
-        network_id=MAINNET_NETWORK_ID,
-        address__in=all_address_interacted,
-        deleted=False,
-    )
-    for wallet_model in all_wallet_models:
-        # we expect each address to be unique, so don't worry about overriding
-        wallet_address_to_model_id[wallet_model.address] = wallet_model.id
-
     for user_addr in all_address_interacted:
+        checksum_addr = Web3.to_checksum_address(user_addr)
+        results = pool_contract_obj.functions.getUserAccountData(checksum_addr).call()
 
-        checksum_user_addr = Web3.to_checksum_address(user_addr)
-        results = pool_contract_obj.functions.getUserAccountData(checksum_user_addr).call()
-
+        health_factor        = results[5] / 10 ** 18
         total_collateral_usd = results[0] / 10 ** 8
-        total_debt_eth = results[1] / 10 ** 8
-        available_borrow_eth = results[2] / 10 ** 18
-        current_liquidation_threshold = results[3] / 10 ** 4
-        ltv = results[4] / 10 ** 4
-        health_factor = results[5] / 10 ** 18
 
-        #print(user_addr, total_collateral_usd, total_debt_eth, available_borrow_eth, current_liquidation_threshold, ltv, health_factor)
-
-        # not as efficient since it'll update one at a time, but there aren't that many positions right now
         Position.objects.update_or_create(
-            contract_id=aave_v3_pool_model.id,
+            contract_id=pool_model.id,
             deleted=False,
-            network_id=MAINNET_NETWORK_ID,
-            wallet_id=wallet_address_to_model_id[user_addr],
+            network_id=network_id,
+            wallet_id=wallet_address_to_id[user_addr],
             defaults=dict(
                 health_factor=health_factor,
-                total_usd_collateral=total_collateral_usd
+                total_usd_collateral=total_collateral_usd,
             ),
         )
-
-        # TODO: add some logging
         count += 1
 
     logger.info(
-        "Finished running pull_positions",
-        extra={
-            "updated_or_created_position_count": count
-        }
+        "Finished pull_positions for %s",
+        network_name,
+        extra={"updated_or_created_position_count": count},
     )
 
 PAGE_SIZE = 1000
@@ -133,7 +174,7 @@ ERC20_ABI = [
 
 
 @shared_task
-def liquidate_position(wallet_address: str) -> dict:
+def liquidate_position(wallet_address: str, network_name: str) -> dict:
     """
     Liquidate an undercollateralised Aave V3 position using a flash loan.
 
@@ -147,28 +188,31 @@ def liquidate_position(wallet_address: str) -> dict:
 
     This means the caller needs only ETH for gas — no debt-token capital.
 
-    Required env vars:
-      LIQUIDATOR_PRIVATE_KEY       – private key (gas money only)
-      FLASH_LIQUIDATOR_ADDRESS     – deployed FlashLiquidator contract address
-      UNISWAP_SWAP_FEE (optional)  – Uniswap V3 fee tier in bps*100
-                                     (500=0.05 %, 3000=0.3 %, 10000=1 %)
-                                     defaults to 3000
+    Required env vars (per-chain, e.g. for Arbitrum):
+      LIQUIDATOR_PRIVATE_KEY              – private key (gas money only)
+      FLASH_LIQUIDATOR_ADDRESS_ARBITRUM   – deployed FlashLiquidator address
+      UNISWAP_SWAP_FEE_ARBITRUM           – optional fee tier (default 3000)
     """
+    config = CHAIN_CONFIG.get(network_name)
+    if not config:
+        logger.error("No CHAIN_CONFIG for network '%s'", network_name)
+        return {"error": f"Unknown network: {network_name}"}
+
     private_key = os.environ.get("LIQUIDATOR_PRIVATE_KEY")
-    flash_liq_address = os.environ.get("FLASH_LIQUIDATOR_ADDRESS")
+    flash_liq_address = os.environ.get(config["flash_liq_env"])
     if not private_key:
         logger.error("LIQUIDATOR_PRIVATE_KEY not set — cannot liquidate")
         return {"error": "LIQUIDATOR_PRIVATE_KEY not configured"}
     if not flash_liq_address:
-        logger.error("FLASH_LIQUIDATOR_ADDRESS not set — cannot liquidate")
-        return {"error": "FLASH_LIQUIDATOR_ADDRESS not configured"}
+        logger.error("%s not set — cannot liquidate", config["flash_liq_env"])
+        return {"error": f"{config['flash_liq_env']} not configured"}
 
-    swap_fee = int(os.environ.get("UNISWAP_SWAP_FEE", "3000"))
+    swap_fee = int(os.environ.get(config["swap_fee_env"], "3000"))
 
-    w3 = Web3(Web3.HTTPProvider(endpoint))
+    w3 = Web3(Web3.HTTPProvider(config["rpc"]))
     liquidator_address = w3.eth.account.from_key(private_key).address
 
-    pool_model = Contract.objects.get(name="Pool", network_id=MAINNET_NETWORK_ID)
+    pool_model = Contract.objects.get(name="Pool", network__name=network_name)
     pool = w3.eth.contract(address=pool_model.address, abi=pool_model.abi)
 
     user = Web3.to_checksum_address(wallet_address)
@@ -269,10 +313,10 @@ def liquidate_position(wallet_address: str) -> dict:
         return {"error": "Transaction reverted", "tx": tx_hash.hex()}
 
 
-def get_logs(from_block, to_block, address, topic0, api_key):
+def get_logs(from_block, to_block, address, topic0, api_key, explorer_url="https://api.etherscan.io/api"):
     import requests
 
-    url = "https://api.etherscan.io/api"
+    url = explorer_url
     all_results = []
     page = 1
 
